@@ -64,7 +64,8 @@
   在存储池 `agents` 上最多使用 20 GiB。
 - 网络 `dot0`（10.251.0.1/24）使用独立 ACL `dot-egress`。拒绝访问所有私有地址、
   链路本地地址和组播地址段，允许公网 TCP 80/443，以及到 223.5.5.5 / 1.1.1.1 的 DNS 请求，
-  不接受入站连接。
+  不接受入站连接。Incus 始终允许容器访问其所在网桥网关上的 DHCP/DNS 服务（ACL 无法阻止）；
+  桥接不使用该服务，`resolv.conf` 中只配置了上述两个公共解析器。
 - 容器 `dot-bridge`（Debian 13）使用配置文件 `dot-bridge`：1 个 CPU、512 MiB 内存、
   8 GiB 根磁盘。自定义 ZFS 卷 `dot-state` 挂载到 `/var/lib/dot-bridge`，容量为 2 GiB，
   每天 03:00 创建快照，保留 30 天。
@@ -88,9 +89,13 @@ tar czf - dot_bridge/*.py deploy | ssh HOST \
   'sudo incus exec dot-bridge --project dot -- sh -c "rm -rf /root/src && mkdir /root/src && tar xzf - -C /root/src && sh /root/src/deploy/provision.sh"'
 ```
 
-- `incus-create.sh` 默认使用名为 `agents` 的 ZFS 存储池，如需更换请修改 `POOL`。
+- `incus-create.sh` 默认使用名为 `agents` 的 ZFS 存储池，如需更换请设置 `POOL`。
   容器的独立 ID 映射要求 root 的 `/etc/subuid` 和 `/etc/subgid` 中存在一个可用的、
   包含 65,536 个 ID 的区段。脚本会检查这一条件，缺失时会给出说明。
+- 在同一主机上部署第二个相互独立的桥接时，需为其指定独立的项目、网络、ACL 和子网：
+  `sudo PROJECT=dot2 NETWORK=dot2net SUBNET=10.252.0 sh /tmp/incus-create.sh`
+  （ACL 默认为 `dot2-egress`）。此处及下文的所有命令都需改用 `--project dot2`。
+  它需要自己的企业微信机器人（`enroll-wecom`）；两个桥接共用一个机器人会相互断开连接。
 - `provision.sh` 可重复执行，并将上一版代码保存在 `/opt/dot-bridge.old`。
 - 不使用 Incus 时，只要环境具备 Python 3.11+、aiohttp 和 cryptography，
   就可以运行 `DOT_BRIDGE_STATE=/path python3 -m dot_bridge serve`。
