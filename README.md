@@ -1,5 +1,7 @@
 # wecom-dot-bridge: WeCom ⇄ your existing ChatGPT dot
 
+English | [简体中文](README.zh-CN.md)
+
 A dedicated WeCom (企业微信) AI bot that forwards one owner's private-chat messages
 (text, images, files, quote replies) into an **existing** ChatGPT dot messaging room,
 and sends the dot's replies and files back to the same WeCom chat.
