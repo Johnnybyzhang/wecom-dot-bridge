@@ -66,7 +66,9 @@ extensions). The bridge gets its own environment and shares nothing with other w
   20 GiB on pool `agents`.
 - Network `dot0` (10.251.0.1/24) with its own ACL `dot-egress`. It denies all
   private, link-local and multicast ranges, allows public TCP 80/443 and DNS to
-  223.5.5.5 / 1.1.1.1, and accepts no ingress.
+  223.5.5.5 / 1.1.1.1, and accepts no ingress. Incus always lets the container
+  reach its own bridge's DHCP/DNS service on the gateway (ACLs cannot block it);
+  the bridge does not use it, as `resolv.conf` names only the two public resolvers.
 - Container `dot-bridge` (Debian 13) on profile `dot-bridge`: 1 CPU, 512 MiB,
   8 GiB root, and custom ZFS volume `dot-state` (2 GiB, snapshotted daily at
   03:00, kept 30 days) at `/var/lib/dot-bridge`.
@@ -91,10 +93,15 @@ tar czf - dot_bridge/*.py deploy | ssh HOST \
   'sudo incus exec dot-bridge --project dot -- sh -c "rm -rf /root/src && mkdir /root/src && tar xzf - -C /root/src && sh /root/src/deploy/provision.sh"'
 ```
 
-- `incus-create.sh` expects a ZFS-backed storage pool named `agents` (edit `POOL`
+- `incus-create.sh` expects a ZFS-backed storage pool named `agents` (set `POOL`
   otherwise). It needs a free 65,536-ID block in root's `/etc/subuid` and
   `/etc/subgid` for the container's isolated ID map; it checks for this and
   explains if the block is missing.
+- A second, independent bridge on the same host gets its own project, network,
+  ACL and subnet: `sudo PROJECT=dot2 NETWORK=dot2net SUBNET=10.252.0 sh
+  /tmp/incus-create.sh` (the ACL defaults to `dot2-egress`). Use `--project dot2`
+  in every command here and below. It needs its own WeCom bot (`enroll-wecom`);
+  two bridges on one bot would disconnect each other.
 - `provision.sh` is idempotent and keeps the previous code in `/opt/dot-bridge.old`.
 - Without Incus, the service runs anywhere with Python 3.11+, aiohttp and
   cryptography: `DOT_BRIDGE_STATE=/path python3 -m dot_bridge serve` (see

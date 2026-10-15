@@ -5,8 +5,9 @@
 # the Incus 6.0 `create` commands read from stdin), so an interrupted run cannot leave a
 # half-configured object. Every object, new or pre-existing, is then compared with its
 # spec, and the script aborts on any mismatch rather than trusting a name.
-# Only these objects are created: ACL dot-egress, network dot0, project dot, and inside
-# that project the profile dot-bridge, volume dot-state and instance dot-bridge.
+# Only these objects are created: ACL $ACL, network $NETWORK, project $PROJECT (by
+# default dot-egress, dot0, dot), and inside that project the profile dot-bridge,
+# volume dot-state and instance dot-bridge.
 # Nothing else is modified: no other project, network, ACL, the pool layout, or host
 # boot/update settings.
 # The container uses an isolated ID map. This needs a free 65536-ID block in the host's
@@ -15,10 +16,15 @@
 # non-isolated container must NOT be used instead: it receives the whole pool and so
 # overlaps the isolated maps of other containers.
 # Run on the host:  sudo sh incus-create.sh      (requires incus and jq)
+# A second, independent bridge on the same host needs its own names and subnet:
+#   sudo PROJECT=dot2 NETWORK=dot2net SUBNET=10.252.0 sh incus-create.sh
 set -eu
 
-PROJECT=dot
-POOL=agents
+PROJECT=${PROJECT:-dot}
+NETWORK=${NETWORK:-${PROJECT}0}
+ACL=${ACL:-${PROJECT}-egress}
+SUBNET=${SUBNET:-10.251.0}  # first three octets of the bridge's /24
+POOL=${POOL:-agents}
 INSTANCE=dot-bridge
 IMAGE=images:debian/13
 MARK="managed-by=agentbox-dot-bridge"
@@ -41,8 +47,8 @@ ACL_SPEC='{"description":"dot-bridge egress: public HTTP(S) and approved DNS onl
  "ingress":[], "config":{}}'
 
 NETWORK_SPEC='{"description":"dot-bridge isolated bridge ('"$MARK"')",
- "config":{"ipv4.address":"10.251.0.1/24","ipv4.nat":"true","ipv6.address":"none",
-  "dns.domain":"dot.agentbox.internal","security.acls":"dot-egress",
+ "config":{"ipv4.address":"'"$SUBNET"'.1/24","ipv4.nat":"true","ipv6.address":"none",
+  "dns.domain":"'"$PROJECT"'.agentbox.internal","security.acls":"'"$ACL"'",
   "security.acls.default.egress.action":"reject","security.acls.default.ingress.action":"reject"}}'
 
 PROJECT_SPEC='{"description":"dot-bridge ('"$MARK"')",
@@ -51,10 +57,10 @@ PROJECT_SPEC='{"description":"dot-bridge ('"$MARK"')",
   "restricted":"true","restricted.containers.privilege":"isolated",
   "restricted.containers.nesting":"block","restricted.containers.lowlevel":"block",
   "restricted.devices.disk":"managed","restricted.devices.nic":"managed",
-  "restricted.devices.proxy":"block","restricted.networks.access":"dot0",
+  "restricted.devices.proxy":"block","restricted.networks.access":"'"$NETWORK"'",
   "restricted.snapshots":"allow","restricted.backups":"allow",
   "limits.containers":"1","limits.virtual-machines":"0","limits.cpu":"2",
-  "limits.memory":"1GiB","limits.processes":"1024","limits.disk.pool.agents":"20GiB"}}'
+  "limits.memory":"1GiB","limits.processes":"1024","limits.disk.pool.'"$POOL"'":"20GiB"}}'
 
 VOLUME_SPEC='{"description":"dot-bridge state ('"$MARK"')",
  "config":{"size":"2GiB","snapshots.schedule":"0 3 * * *","snapshots.expiry":"30d"}}'
@@ -63,9 +69,9 @@ PROFILE_SPEC='{"description":"dot-bridge container ('"$MARK"')",
  "config":{"limits.cpu":"1","limits.memory":"512MiB","limits.processes":"512",
   "security.idmap.isolated":"true","security.nesting":"false","security.privileged":"false"},
  "devices":{
-  "eth0":{"type":"nic","name":"eth0","network":"dot0"},
-  "root":{"type":"disk","path":"/","pool":"agents","size":"8GiB"},
-  "state":{"type":"disk","path":"/var/lib/dot-bridge","pool":"agents","source":"dot-state"}}}'
+  "eth0":{"type":"nic","name":"eth0","network":"'"$NETWORK"'"},
+  "root":{"type":"disk","path":"/","pool":"'"$POOL"'","size":"8GiB"},
+  "state":{"type":"disk","path":"/var/lib/dot-bridge","pool":"'"$POOL"'","source":"dot-state"}}}'
 
 # Compare a live object with its spec: the ownership marker in the description, every
 # spec config key, ACL rules exactly, profile devices exactly, plus an optional extra check.
@@ -90,20 +96,29 @@ verify() { # api-path spec [extra-jq-condition]
 }
 
 command -v jq >/dev/null || die "jq is required"
-[ "$(sed -n 's/^root:[0-9]*://p' /etc/subuid)" -ge 131072 ] 2>/dev/null \
-  || die "/etc/subuid has no free 65536-ID block for an isolated map (see header)"
+printf '%s' "$SUBNET" | grep -Eq '^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$' || die "SUBNET must look like 10.252.0"
 exists "/1.0/storage-pools/$POOL" || die "storage pool $POOL not found"
-if ! exists "/1.0/networks/dot0?project=default" && ip -4 route | grep -q '^10\.251\.0\.'; then
-  die "10.251.0.0/24 is already routed on this host"
+if ! exists "/1.0/instances/$INSTANCE?project=$PROJECT"; then
+  # The first block of the pool is the default map; each isolated container takes one more.
+  isolated=$(incus query "/1.0/instances?recursion=1&all-projects=true" </dev/null \
+    | jq '[.[] | select(.expanded_config["security.idmap.isolated"] == "true")] | length')
+  for ids in /etc/subuid /etc/subgid; do
+    [ "$(sed -n 's/^root:[0-9]*://p' "$ids")" -ge $(( (isolated + 2) * 65536 )) ] 2>/dev/null \
+      || die "$ids has no free 65536-ID block for an isolated map (see header)"
+  done
+fi
+if ! exists "/1.0/networks/$NETWORK?project=default" \
+    && ip -4 route | grep -q "^$(printf '%s' "$SUBNET" | sed 's/\./\\./g')\."; then
+  die "$SUBNET.0/24 is already routed on this host"
 fi
 
-exists "/1.0/network-acls/dot-egress?project=default" || \
-  printf '%s' "$ACL_SPEC" | incus network acl create dot-egress --project default
-verify "/1.0/network-acls/dot-egress?project=default" "$ACL_SPEC"
+exists "/1.0/network-acls/$ACL?project=default" || \
+  printf '%s' "$ACL_SPEC" | incus network acl create "$ACL" --project default
+verify "/1.0/network-acls/$ACL?project=default" "$ACL_SPEC"
 
-exists "/1.0/networks/dot0?project=default" || \
-  printf '%s' "$NETWORK_SPEC" | incus network create dot0 --type bridge --project default
-verify "/1.0/networks/dot0?project=default" "$NETWORK_SPEC" '.managed == true and .type == "bridge"'
+exists "/1.0/networks/$NETWORK?project=default" || \
+  printf '%s' "$NETWORK_SPEC" | incus network create "$NETWORK" --type bridge --project default
+verify "/1.0/networks/$NETWORK?project=default" "$NETWORK_SPEC" '.managed == true and .type == "bridge"'
 
 exists "/1.0/projects/$PROJECT" || \
   printf '%s' "$PROJECT_SPEC" | incus project create "$PROJECT"
