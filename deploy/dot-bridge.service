@@ -1,0 +1,47 @@
+[Unit]
+Description=WeCom <-> existing ChatGPT dot bridge
+Wants=network-online.target
+After=network-online.target
+RequiresMountsFor=/var/lib/dot-bridge
+
+[Service]
+Type=simple
+User=dot-bridge
+Group=dot-bridge
+UMask=0077
+Environment=PYTHONPATH=/opt/dot-bridge PYTHONDONTWRITEBYTECODE=1 DOT_BRIDGE_STATE=/var/lib/dot-bridge
+WorkingDirectory=/var/lib/dot-bridge
+ExecStart=/usr/bin/python3 -P -m dot_bridge serve
+Restart=on-failure
+RestartSec=10s
+# 75: WeCom reported another client using this bot, or a second instance; restarting
+# would start a mutual-kick loop. Operator action required (see README).
+RestartPreventExitStatus=75
+TimeoutStopSec=30s
+KillSignal=SIGTERM
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHome=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectProc=invisible
+ProtectSystem=strict
+ProcSubset=pid
+ReadWritePaths=/var/lib/dot-bridge
+# AF_NETLINK: glibc getaddrinfo(AI_ADDRCONFIG) probes interfaces over netlink.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+TasksMax=64
+MemoryMax=256M
+LimitNOFILE=1024
+
+[Install]
+WantedBy=multi-user.target
